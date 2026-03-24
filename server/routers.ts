@@ -13,6 +13,11 @@ import {
   getReviewsBySpotId,
   createReview,
 } from "./db";
+import {
+  searchNearbyPlaces,
+  callAgentServer,
+  searchGakuwariSpots,
+} from "./agent";
 import { storagePut } from "./storage";
 import { nanoid } from "nanoid";
 
@@ -133,6 +138,51 @@ export const appRouter = router({
         const key = `images/${nanoid()}.${ext}`;
         const { url } = await storagePut(key, buffer, input.contentType);
         return { url };
+      }),
+  }),
+
+  agent: router({
+    /**
+     * 周辺店舗を検索し、Agentで学割情報を自動調査する
+     * フロー: Google Maps Places API → Agent Server → 結果マージ
+     */
+    searchGakuwari: publicProcedure
+      .input(z.object({
+        lat: z.number(),
+        lng: z.number(),
+        radius: z.number().min(100).max(5000).optional(),
+        keyword: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const results = await searchGakuwariSpots(
+          input.lat,
+          input.lng,
+          input.radius ?? 500,
+          input.keyword,
+        );
+        return { results };
+      }),
+
+    /**
+     * Google Maps Places APIのみで周辺店舗を取得する（Agent不使用）
+     */
+    nearbyPlaces: publicProcedure
+      .input(z.object({
+        lat: z.number(),
+        lng: z.number(),
+        radius: z.number().min(100).max(5000).optional(),
+        keyword: z.string().optional(),
+        type: z.string().optional(),
+      }))
+      .query(async ({ input }) => {
+        const shops = await searchNearbyPlaces(
+          input.lat,
+          input.lng,
+          input.radius ?? 500,
+          input.keyword,
+          input.type,
+        );
+        return { shops };
       }),
   }),
 });

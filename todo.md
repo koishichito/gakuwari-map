@@ -23,3 +23,15 @@
 
 ## テスト
 - [x] バックエンドAPI Vitestテスト
+
+## v2: Agent機能（学割情報自動調査）
+- [x] 環境変数設定（OLLAMA_AGENT_URL, OLLAMA_API_KEY）
+- [x] バックエンドAPI: /api/agent/gakuwari エンドポイント実装
+- [x] Google Maps Places APIで周辺店舗取得ロジック
+- [x] 外部Agentサーバー（ollama.gitpullpull.me）への転送ロジック
+- [x] Agent結果のパース・整形処理
+- [x] フロントエンド: Agent検索ボタン・UI追加
+- [x] フロントエンド: Agent検索結果のマップ上表示（ピン・情報ウィンドウ）
+- [x] フロントエンド: Agent検索結果のリスト表示
+- [x] フロントエンド: ローディング状態・エラーハンドリング
+- [x] Vitestテスト追加（Agent API）

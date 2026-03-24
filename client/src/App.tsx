@@ -10,6 +10,7 @@ import SpotList from "./pages/SpotList";
 import SpotDetail from "./pages/SpotDetail";
 import SearchPage from "./pages/SearchPage";
 import SubmitSpot from "./pages/SubmitSpot";
+import AgentSearch from "./pages/AgentSearch";
 
 function Router() {
   return (
@@ -19,6 +20,7 @@ function Router() {
       <Route path="/spots/:id" component={SpotDetail} />
       <Route path="/search" component={SearchPage} />
       <Route path="/submit" component={SubmitSpot} />
+      <Route path="/agent" component={AgentSearch} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>
