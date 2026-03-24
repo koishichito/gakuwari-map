@@ -163,6 +163,79 @@ describe("spot.nearby", () => {
   });
 });
 
+describe("spot.nearby - auto geolocation scenario", () => {
+  it("returns spots with tighter radius (10km) for real user location", async () => {
+    const ctx = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    // Simulate user near Tokyo center with tighter radius
+    const result = await caller.spot.nearby({
+      lat: 35.6812,
+      lng: 139.7671,
+      radiusKm: 10,
+      limit: 20,
+    });
+
+    expect(Array.isArray(result)).toBe(true);
+    // Should still find spots within 10km of Tokyo center
+    expect(result.length).toBeGreaterThanOrEqual(1);
+
+    // Verify all returned spots are within the specified radius
+    result.forEach((spot) => {
+      expect(spot.distance).toBeGreaterThanOrEqual(0);
+      expect(spot.distance).toBeLessThan(10);
+    });
+  });
+
+  it("returns spots sorted by distance (closest first)", async () => {
+    const ctx = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const result = await caller.spot.nearby({
+      lat: 35.6812,
+      lng: 139.7671,
+      radiusKm: 50,
+      limit: 20,
+    });
+
+    expect(result.length).toBeGreaterThanOrEqual(2);
+
+    // Verify distance is sorted ascending
+    for (let i = 1; i < result.length; i++) {
+      expect(result[i].distance).toBeGreaterThanOrEqual(result[i - 1].distance);
+    }
+  });
+
+  it("each spot has required fields for SpotCard rendering", async () => {
+    const ctx = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const result = await caller.spot.nearby({
+      lat: 35.6812,
+      lng: 139.7671,
+      radiusKm: 50,
+      limit: 5,
+    });
+
+    expect(result.length).toBeGreaterThanOrEqual(1);
+
+    result.forEach((spot) => {
+      // Required fields for SpotCard component
+      expect(spot).toHaveProperty("id");
+      expect(spot).toHaveProperty("name");
+      expect(spot).toHaveProperty("address");
+      expect(spot).toHaveProperty("discountDetail");
+      expect(spot).toHaveProperty("categoryId");
+      expect(spot).toHaveProperty("lat");
+      expect(spot).toHaveProperty("lng");
+      expect(spot).toHaveProperty("avgRating");
+      expect(spot).toHaveProperty("reviewCount");
+      expect(spot).toHaveProperty("distance");
+      expect(typeof spot.distance).toBe("number");
+    });
+  });
+});
+
 describe("review.bySpot", () => {
   it("returns reviews for a spot", async () => {
     const ctx = createPublicContext();
