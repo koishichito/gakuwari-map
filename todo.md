@@ -41,3 +41,6 @@
 - [x] Agent連携をOllama /api/chat直接呼び出し方式に変更
 - [x] サーバーサイドでAgentループ実装（tool_callsハンドリング）
 - [x] 動作確認・テスト
+
+## v2.1 バグ修正
+- [x] Google Mapsスクリプト読み込みエラー（Map.tsx:27, 52）の修正

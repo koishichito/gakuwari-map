@@ -69,14 +69,14 @@
  *
  * -------------------------------
  * ✅ SUMMARY
- * - “map-attached” → AdvancedMarkerElement, DirectionsRenderer, Layers.
- * - “standalone” → Geocoder, DirectionsService, DistanceMatrixService, ElevationService.
- * - “data-only” → Place, Geometry utilities.
+ * - "map-attached" → AdvancedMarkerElement, DirectionsRenderer, Layers.
+ * - "standalone" → Geocoder, DirectionsService, DistanceMatrixService, ElevationService.
+ * - "data-only" → Place, Geometry utilities.
  */
 
 /// <reference types="@types/google.maps" />
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePersistFn } from "@/hooks/usePersistFn";
 import { cn } from "@/lib/utils";
 
@@ -86,37 +86,64 @@ declare global {
   }
 }
 
-const API_KEY = import.meta.env.VITE_FRONTEND_FORGE_API_KEY;
-const FORGE_BASE_URL =
-  import.meta.env.VITE_FRONTEND_FORGE_API_URL ||
-  "https://forge.butterfly-effect.dev";
-const MAPS_PROXY_URL = `${FORGE_BASE_URL}/v1/maps/proxy`;
-
 let mapScriptPromise: Promise<void> | null = null;
+let mapScriptLoaded = false;
 
 function loadMapScript(): Promise<void> {
-  // Prevent duplicate loading
-  if (window.google?.maps) {
+  // Already loaded successfully
+  if (mapScriptLoaded && window.google?.maps) {
     return Promise.resolve();
   }
+
+  // Loading in progress
   if (mapScriptPromise) {
     return mapScriptPromise;
   }
+
   mapScriptPromise = new Promise<void>((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = `${MAPS_PROXY_URL}/maps/api/js?key=${API_KEY}&v=weekly&libraries=marker,places,geocoding,geometry`;
-    script.async = true;
-    script.crossOrigin = "anonymous";
-    script.onload = () => {
+    // Check if already loaded by another instance
+    if (window.google?.maps) {
+      mapScriptLoaded = true;
       resolve();
+      return;
+    }
+
+    // Remove any previously failed script tags
+    const existingScripts = document.querySelectorAll('script[src*="maps-js"], script[src*="maps/api/js"]');
+    existingScripts.forEach(s => s.remove());
+
+    const script = document.createElement("script");
+    // Use server-side proxy to handle authentication
+    // The server fetches the Maps JS API using the server-side API key
+    script.src = `/api/maps-js?v=weekly&libraries=marker,places,geocoding,geometry`;
+    script.async = true;
+
+    script.onload = () => {
+      // The Maps JS API bootstrap script loads additional scripts
+      // Wait for google.maps to be available
+      const checkReady = (attempts: number) => {
+        if (window.google?.maps) {
+          mapScriptLoaded = true;
+          resolve();
+        } else if (attempts > 50) {
+          mapScriptPromise = null;
+          reject(new Error("Google Maps API did not initialize after script load"));
+        } else {
+          setTimeout(() => checkReady(attempts + 1), 100);
+        }
+      };
+      checkReady(0);
     };
-    script.onerror = () => {
-      mapScriptPromise = null; // Allow retry
-      console.error("Failed to load Google Maps script");
+
+    script.onerror = (event) => {
+      mapScriptPromise = null;
+      console.error("Failed to load Google Maps script from proxy");
       reject(new Error("Failed to load Google Maps script"));
     };
+
     document.head.appendChild(script);
   });
+
   return mapScriptPromise;
 }
 
@@ -129,42 +156,62 @@ interface MapViewProps {
 
 export function MapView({
   className,
-  initialCenter = { lat: 37.7749, lng: -122.4194 },
+  initialCenter = { lat: 35.6812, lng: 139.7671 },
   initialZoom = 12,
   onMapReady,
 }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<google.maps.Map | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   const init = usePersistFn(async () => {
+    setLoading(true);
+    setError(null);
+
     try {
       await loadMapScript();
     } catch (err) {
-      console.error("Map script load failed, retrying...", err);
-      // Retry once after a short delay
-      await new Promise(r => setTimeout(r, 1000));
+      console.warn("Map script load failed, retrying...", err);
+      // Reset and retry once after a delay
+      mapScriptPromise = null;
+      await new Promise(r => setTimeout(r, 2000));
       try {
         await loadMapScript();
-      } catch {
-        console.error("Map script load failed after retry");
+      } catch (retryErr) {
+        console.error("Map script load failed after retry:", retryErr);
+        setError("Google Mapsの読み込みに失敗しました。ページを再読み込みしてください。");
+        setLoading(false);
         return;
       }
     }
+
     if (!mapContainer.current) {
-      console.error("Map container not found");
+      setError("マップコンテナが見つかりません");
+      setLoading(false);
       return;
     }
-    map.current = new window.google.maps.Map(mapContainer.current, {
-      zoom: initialZoom,
-      center: initialCenter,
-      mapTypeControl: true,
-      fullscreenControl: true,
-      zoomControl: true,
-      streetViewControl: true,
-      mapId: "DEMO_MAP_ID",
-    });
-    if (onMapReady) {
-      onMapReady(map.current);
+
+    try {
+      map.current = new window.google!.maps.Map(mapContainer.current, {
+        zoom: initialZoom,
+        center: initialCenter,
+        mapTypeControl: true,
+        fullscreenControl: true,
+        zoomControl: true,
+        streetViewControl: true,
+        mapId: "DEMO_MAP_ID",
+      });
+
+      setLoading(false);
+
+      if (onMapReady) {
+        onMapReady(map.current);
+      }
+    } catch (mapErr) {
+      console.error("Failed to initialize Google Map:", mapErr);
+      setError("マップの初期化に失敗しました。");
+      setLoading(false);
     }
   });
 
@@ -173,6 +220,34 @@ export function MapView({
   }, [init]);
 
   return (
-    <div ref={mapContainer} className={cn("w-full h-[500px]", className)} />
+    <div className={cn("relative w-full h-[500px]", className)}>
+      {loading && !error && (
+        <div className="absolute inset-0 flex items-center justify-center bg-muted/50 rounded-xl z-10">
+          <div className="flex flex-col items-center gap-2">
+            <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+            <span className="text-sm text-muted-foreground">マップを読み込み中...</span>
+          </div>
+        </div>
+      )}
+      {error && (
+        <div className="absolute inset-0 flex items-center justify-center bg-muted/30 rounded-xl z-10">
+          <div className="flex flex-col items-center gap-3 p-6 text-center">
+            <div className="text-4xl">🗺️</div>
+            <p className="text-sm text-muted-foreground">{error}</p>
+            <button
+              onClick={() => {
+                mapScriptPromise = null;
+                mapScriptLoaded = false;
+                init();
+              }}
+              className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition"
+            >
+              再読み込み
+            </button>
+          </div>
+        </div>
+      )}
+      <div ref={mapContainer} className="w-full h-full rounded-xl" />
+    </div>
   );
 }

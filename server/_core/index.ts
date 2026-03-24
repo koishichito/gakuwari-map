@@ -35,6 +35,44 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
+
+  // Google Maps JS API proxy - serves the Maps script through the server
+  // Frontend key requires Origin header, which script tags send automatically from browser
+  // But in some environments the Origin may not match. This proxy uses the frontend key
+  // with the correct Origin header to ensure reliable loading.
+  app.get("/api/maps-js", async (req, res) => {
+    try {
+      const forgeApiUrl = (process.env.VITE_FRONTEND_FORGE_API_URL || process.env.BUILT_IN_FORGE_API_URL || "").replace(/\/+$/, "");
+      const forgeApiKey = process.env.VITE_FRONTEND_FORGE_API_KEY || "";
+      if (!forgeApiUrl || !forgeApiKey) {
+        res.status(500).send("Maps proxy not configured");
+        return;
+      }
+      const libraries = (req.query.libraries as string) || "marker,places,geocoding,geometry";
+      const v = (req.query.v as string) || "weekly";
+      const url = `${forgeApiUrl}/v1/maps/proxy/maps/api/js?key=${encodeURIComponent(forgeApiKey)}&v=${v}&libraries=${libraries}`;
+      // Get the origin from the request or use a fallback
+      const origin = req.headers.origin || req.headers.referer?.replace(/\/[^/]*$/, '') || `${req.protocol}://${req.get('host')}`;
+      const response = await fetch(url, {
+        headers: {
+          "Origin": origin,
+        },
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        console.error(`[Maps JS Proxy] Forge returned ${response.status}: ${errText}`);
+        res.status(response.status).send(errText);
+        return;
+      }
+      const jsContent = await response.text();
+      res.setHeader("Content-Type", "application/javascript");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      res.send(jsContent);
+    } catch (error) {
+      console.error("[Maps JS Proxy] Error:", error);
+      res.status(500).send("Failed to load Maps script");
+    }
+  });
   // tRPC API
   app.use(
     "/api/trpc",
