@@ -318,7 +318,7 @@ export default function AgentSearch() {
               {agentSearch.isPending ? (
                 <>
                   <Loader2 size={18} className="mr-2 animate-spin" />
-                  AIが調査中...（最大2分ほどかかります）
+                  AIが調査中...（店舗数により3〜10分かかります）
                 </>
               ) : (
                 <>
@@ -355,9 +355,11 @@ export default function AgentSearch() {
               </div>
               <h3 className="text-lg font-bold mb-2">AIが学割情報を調査中...</h3>
               <p className="text-sm text-muted-foreground mb-4">
-                周辺の店舗をWeb検索して学割情報を収集しています。
+                Google Mapsから周辺店舗を取得し、各店舗について
                 <br />
-                店舗数によって1〜2分ほどかかる場合があります。
+                Web検索（SearXNG）で学割情報を調査しています。
+                <br />
+                <span className="text-xs mt-1 block">店舗数により3〜10分ほどかかる場合があります。</span>
               </p>
               <div className="flex justify-center gap-2">
                 {[0, 1, 2].map((i) => (

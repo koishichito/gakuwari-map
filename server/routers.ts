@@ -15,7 +15,6 @@ import {
 } from "./db";
 import {
   searchNearbyPlaces,
-  callAgentServer,
   searchGakuwariSpots,
 } from "./agent";
 import { storagePut } from "./storage";
