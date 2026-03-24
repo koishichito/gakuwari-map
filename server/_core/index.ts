@@ -51,8 +51,23 @@ async function startServer() {
       const libraries = (req.query.libraries as string) || "marker,places,geocoding,geometry";
       const v = (req.query.v as string) || "weekly";
       const url = `${forgeApiUrl}/v1/maps/proxy/maps/api/js?key=${encodeURIComponent(forgeApiKey)}&v=${v}&libraries=${libraries}`;
-      // Get the origin from the request or use a fallback
-      const origin = req.headers.origin || req.headers.referer?.replace(/\/[^/]*$/, '') || `${req.protocol}://${req.get('host')}`;
+      // Get the origin from the request. Script tags don't send Origin header,
+      // so we extract it from Referer. Fallback to the project's manus.space domain.
+      let origin = req.headers.origin;
+      if (!origin && req.headers.referer) {
+        try {
+          const refUrl = new URL(req.headers.referer as string);
+          origin = refUrl.origin;
+        } catch { /* ignore */ }
+      }
+      // Final fallback: use the project's known public domain
+      if (!origin || origin === 'http://localhost:3000' || origin.includes('localhost')) {
+        const appId = process.env.VITE_APP_ID || '';
+        // Try to construct the manus.space origin from known domain patterns
+        origin = req.headers['x-forwarded-host']
+          ? `${req.protocol}://${req.headers['x-forwarded-host']}`
+          : 'https://gakuwari-zzmc6uvu.manus.space';
+      }
       const response = await fetch(url, {
         headers: {
           "Origin": origin,
