@@ -92,8 +92,9 @@ const OLLAMA_URL = process.env.OLLAMA_AGENT_URL || "https://ollama.gitpullpull.m
 const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY || "";
 const SEARXNG_URL = "https://searxng.gitpullpull.me";
 const OLLAMA_MODEL = "qwen3.5:27b";
-const MAX_AGENT_LOOPS = 5; // tool_callsの最大ループ回数
-const OLLAMA_TIMEOUT = 180_000; // 3分タイムアウト
+const MAX_AGENT_LOOPS = 3; // tool_callsの最大ループ回数
+const OLLAMA_TIMEOUT = 120_000; // 2分タイムアウト
+const MAX_SHOPS = 5; // Agent調査する最大店舗数（504タイムアウト対策）
 
 // ============================================================================
 // System Prompt & Tools
@@ -113,9 +114,7 @@ const SYSTEM_PROMPT = `あなたは店舗の学割情報を調査するエージ
 - has_gakuwari: 学割があるかどうか
 - discount_info: 学割の具体的な内容（例: 「学生証提示でドリンク10%OFF」）。ない場合は空文字
 - source_url: 情報源のURL。ない場合は空文字
-- confidence: 情報の信頼度。公式サイトや信頼できるソースからの情報は"high"、口コミやまとめサイトは"medium"、推測は"low"
-
-/no_think`;
+- confidence: 情報の信頼度。公式サイトや信頼できるソースからの情報は"high"、口コミやまとめサイトは"medium"、推測は"low"`;
 
 const TOOLS_DEFINITION = [
   {
@@ -214,17 +213,26 @@ async function runAgentForShop(shop: AgentShop): Promise<AgentResultItem> {
           tools: TOOLS_DEFINITION,
           stream: false,
           keep_alive: -1,
+          think: false,
         }),
         signal: AbortSignal.timeout(OLLAMA_TIMEOUT),
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error(`[Agent] Ollama error (${response.status}): ${errorText}`);
+        console.error(`[Agent] Ollama error (${response.status}): ${errorText.slice(0, 500)}`);
         throw new Error(`Ollama error: ${response.status}`);
       }
 
-      const data = (await response.json()) as OllamaChatResponse;
+      // Guard against non-JSON responses (e.g., Cloudflare 502 HTML pages)
+      const responseText = await response.text();
+      let data: OllamaChatResponse;
+      try {
+        data = JSON.parse(responseText) as OllamaChatResponse;
+      } catch {
+        console.error(`[Agent] Non-JSON response from Ollama: ${responseText.slice(0, 300)}`);
+        throw new Error(`Ollama returned non-JSON response`);
+      }
       const assistantMessage = data.message;
 
       // メッセージ履歴に追加
@@ -399,29 +407,7 @@ export async function searchNearbyPlaces(
     types: place.types,
   }));
 
-  // 各店舗のwebsite情報を取得（Place Details API）- 最大20件
-  const shopsWithDetails = await Promise.all(
-    shops.slice(0, 20).map(async (shop) => {
-      try {
-        const details = await makeRequest<PlaceDetailsResult>(
-          "/maps/api/place/details/json",
-          {
-            place_id: shop.place_id,
-            fields: "website",
-            language: "ja",
-          },
-        );
-        if (details.status === "OK" && details.result?.website) {
-          return { ...shop, website: details.result.website };
-        }
-      } catch {
-        // website取得失敗は無視
-      }
-      return shop;
-    }),
-  );
-
-  return shopsWithDetails;
+  return shops;
 }
 
 // ============================================================================
@@ -448,23 +434,25 @@ export async function searchGakuwariSpots(
 
   console.log(`[Agent] Found ${shops.length} shops, starting agent investigation...`);
 
-  // 2. 各店舗についてAgentループを実行（並列、最大5件ずつ）
-  const batchSize = 3;
+  // 2. 各店舗についてAgentループを実行（並列、最大MAX_SHOPS件）
+  const targetShops = shops.slice(0, MAX_SHOPS);
+  const batchSize = MAX_SHOPS; // 全件並列実行で高速化
   const allResults: AgentResultItem[] = [];
 
-  for (let i = 0; i < shops.length; i += batchSize) {
-    const batch = shops.slice(i, i + batchSize);
+  for (let i = 0; i < targetShops.length; i += batchSize) {
+    const batch = targetShops.slice(i, i + batchSize);
     const batchResults = await Promise.all(
       batch.map((shop) => runAgentForShop(shop)),
     );
     allResults.push(...batchResults);
-    console.log(`[Agent] Completed ${Math.min(i + batchSize, shops.length)}/${shops.length} shops`);
+    console.log(`[Agent] Completed ${Math.min(i + batchSize, targetShops.length)}/${targetShops.length} shops`);
   }
 
   // 3. Places結果とAgent結果をマージ
   const agentMap = new Map(allResults.map((r) => [r.place_id, r]));
 
-  return shops.map((shop) => {
+  // Agent調査済みの店舗のみ返す
+  return targetShops.map((shop) => {
     const agentResult = agentMap.get(shop.place_id);
     return {
       place_id: shop.place_id,

@@ -89,19 +89,21 @@ declare global {
 let mapScriptPromise: Promise<void> | null = null;
 let mapScriptLoaded = false;
 
+/**
+ * Load Google Maps JS API using a <script> tag.
+ * Strategy:
+ *   1. Try direct Forge Proxy URL (frontend key, browser sends Origin automatically)
+ *   2. Fallback to server-side proxy (/api/maps-js)
+ */
 function loadMapScript(): Promise<void> {
-  // Already loaded successfully
   if (mapScriptLoaded && window.google?.maps) {
     return Promise.resolve();
   }
-
-  // Loading in progress
   if (mapScriptPromise) {
     return mapScriptPromise;
   }
 
   mapScriptPromise = new Promise<void>((resolve, reject) => {
-    // Check if already loaded by another instance
     if (window.google?.maps) {
       mapScriptLoaded = true;
       resolve();
@@ -109,39 +111,71 @@ function loadMapScript(): Promise<void> {
     }
 
     // Remove any previously failed script tags
-    const existingScripts = document.querySelectorAll('script[src*="maps-js"], script[src*="maps/api/js"]');
+    const existingScripts = document.querySelectorAll('script[src*="maps-js"], script[src*="maps/api/js"], script[src*="maps/proxy"]');
     existingScripts.forEach(s => s.remove());
 
-    const script = document.createElement("script");
-    // Use server-side proxy to handle authentication
-    // The server fetches the Maps JS API using the server-side API key
-    script.src = `/api/maps-js?v=weekly&libraries=marker,places,geocoding,geometry`;
-    script.async = true;
+    const libraries = "marker,places,geocoding,geometry";
+    const v = "weekly";
 
-    script.onload = () => {
-      // The Maps JS API bootstrap script loads additional scripts
-      // Wait for google.maps to be available
-      const checkReady = (attempts: number) => {
-        if (window.google?.maps) {
-          mapScriptLoaded = true;
-          resolve();
-        } else if (attempts > 50) {
-          mapScriptPromise = null;
-          reject(new Error("Google Maps API did not initialize after script load"));
+    // Build the primary URL: direct Forge Proxy with frontend key
+    const forgeApiUrl = (import.meta.env.VITE_FRONTEND_FORGE_API_URL || "").replace(/\/+$/, "");
+    const forgeApiKey = import.meta.env.VITE_FRONTEND_FORGE_API_KEY || "";
+
+    const primaryUrl = forgeApiUrl && forgeApiKey
+      ? `${forgeApiUrl}/v1/maps/proxy/maps/api/js?key=${encodeURIComponent(forgeApiKey)}&v=${v}&libraries=${libraries}`
+      : null;
+
+    // Fallback URL: server-side proxy
+    const fallbackUrl = `/api/maps-js?v=${v}&libraries=${libraries}`;
+
+    const tryLoad = (url: string, isFallback: boolean) => {
+      const script = document.createElement("script");
+      script.src = url;
+      script.async = true;
+
+      script.onload = () => {
+        const checkReady = (attempts: number) => {
+          if (window.google?.maps) {
+            mapScriptLoaded = true;
+            resolve();
+          } else if (attempts > 50) {
+            // Script loaded but google.maps not available
+            script.remove();
+            if (!isFallback) {
+              console.warn("[Maps] Primary script loaded but google.maps not available, trying fallback...");
+              mapScriptPromise = null;
+              tryLoad(fallbackUrl, true);
+            } else {
+              mapScriptPromise = null;
+              reject(new Error("Google Maps API did not initialize after script load"));
+            }
+          } else {
+            setTimeout(() => checkReady(attempts + 1), 100);
+          }
+        };
+        checkReady(0);
+      };
+
+      script.onerror = () => {
+        script.remove();
+        if (!isFallback) {
+          console.warn("[Maps] Primary load failed, trying server proxy fallback...");
+          tryLoad(fallbackUrl, true);
         } else {
-          setTimeout(() => checkReady(attempts + 1), 100);
+          mapScriptPromise = null;
+          reject(new Error("Failed to load Google Maps script"));
         }
       };
-      checkReady(0);
+
+      document.head.appendChild(script);
     };
 
-    script.onerror = (event) => {
-      mapScriptPromise = null;
-      console.error("Failed to load Google Maps script from proxy");
-      reject(new Error("Failed to load Google Maps script"));
-    };
-
-    document.head.appendChild(script);
+    // Start with primary URL, fallback to server proxy
+    if (primaryUrl) {
+      tryLoad(primaryUrl, false);
+    } else {
+      tryLoad(fallbackUrl, true);
+    }
   });
 
   return mapScriptPromise;
@@ -173,8 +207,8 @@ export function MapView({
       await loadMapScript();
     } catch (err) {
       console.warn("Map script load failed, retrying...", err);
-      // Reset and retry once after a delay
       mapScriptPromise = null;
+      mapScriptLoaded = false;
       await new Promise(r => setTimeout(r, 2000));
       try {
         await loadMapScript();

@@ -44,3 +44,7 @@
 
 ## v2.1 バグ修正
 - [x] Google Mapsスクリプト読み込みエラー（Map.tsx:27, 52）の修正
+
+## v2.2 バグ修正
+- [x] Ollamaのthinking無効化（think: false追加）
+- [x] TRPCエラー修正（504 Gateway Timeout対応: 店舗数5件制限、並列実行、エラーハンドリング強化）

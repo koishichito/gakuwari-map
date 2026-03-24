@@ -49,7 +49,14 @@ export default function AgentSearch() {
       }
     },
     onError: (error) => {
-      toast.error(`検索に失敗しました: ${error.message}`);
+      const msg = error.message || "";
+      if (msg.includes("not valid JSON") || msg.includes("504") || msg.includes("502")) {
+        toast.error("AIサーバーが応答タイムアウトしました。しばらく待ってから再度お試しください。", {
+          duration: 8000,
+        });
+      } else {
+        toast.error(`検索に失敗しました: ${msg}`);
+      }
     },
   });
 
@@ -318,7 +325,7 @@ export default function AgentSearch() {
               {agentSearch.isPending ? (
                 <>
                   <Loader2 size={18} className="mr-2 animate-spin" />
-                  AIが調査中...（店舗数により3〜10分かかります）
+                  AIが調査中...（最大5店舗、約1〜3分）
                 </>
               ) : (
                 <>
@@ -359,7 +366,7 @@ export default function AgentSearch() {
                 <br />
                 Web検索（SearXNG）で学割情報を調査しています。
                 <br />
-                <span className="text-xs mt-1 block">店舗数により3〜10分ほどかかる場合があります。</span>
+                 <span className="text-xs mt-1 block">最大5店舗を並列調査します。約1〜3分かかります。</span>
               </p>
               <div className="flex justify-center gap-2">
                 {[0, 1, 2].map((i) => (
