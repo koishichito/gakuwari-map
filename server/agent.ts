@@ -91,7 +91,7 @@ interface SearXNGResponse {
 const OLLAMA_URL = process.env.OLLAMA_AGENT_URL || "https://ollama.gitpullpull.me";
 const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY || "";
 const SEARXNG_URL = "https://searxng.gitpullpull.me";
-const OLLAMA_MODEL = "qwen3.5:27b";
+const OLLAMA_MODEL = "qwen3.5:35b-a3b-q4_K_M"; //使用モデルをqwen3.5:27b より変更
 const MAX_AGENT_LOOPS = 3; // tool_callsの最大ループ回数
 const OLLAMA_TIMEOUT = 120_000; // 2分タイムアウト
 const MAX_SHOPS = 5; // Agent調査する最大店舗数（504タイムアウト対策）
