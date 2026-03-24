@@ -2,27 +2,139 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
+import { z } from "zod";
+import {
+  getAllCategories,
+  createCategory,
+  getSpots,
+  getSpotById,
+  getNearbySpots,
+  createSpot,
+  getReviewsBySpotId,
+  createReview,
+} from "./db";
+import { storagePut } from "./storage";
+import { nanoid } from "nanoid";
 
 export const appRouter = router({
-    // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
   system: systemRouter,
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-      return {
-        success: true,
-      } as const;
+      return { success: true } as const;
     }),
   }),
 
-  // TODO: add feature routers here, e.g.
-  // todo: router({
-  //   list: protectedProcedure.query(({ ctx }) =>
-  //     db.getUserTodos(ctx.user.id)
-  //   ),
-  // }),
+  category: router({
+    list: publicProcedure.query(async () => {
+      return getAllCategories();
+    }),
+    create: publicProcedure
+      .input(z.object({
+        name: z.string().min(1).max(100),
+        icon: z.string().min(1).max(50),
+        color: z.string().min(1).max(20),
+      }))
+      .mutation(async ({ input }) => {
+        return createCategory(input);
+      }),
+  }),
+
+  spot: router({
+    list: publicProcedure
+      .input(z.object({
+        categoryId: z.number().optional(),
+        search: z.string().optional(),
+        limit: z.number().min(1).max(100).optional(),
+        offset: z.number().min(0).optional(),
+        sortBy: z.enum(["rating", "newest", "name"]).optional(),
+      }).optional())
+      .query(async ({ input }) => {
+        return getSpots(input ?? {});
+      }),
+
+    byId: publicProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        const spot = await getSpotById(input.id);
+        if (!spot) throw new Error("Spot not found");
+        return spot;
+      }),
+
+    nearby: publicProcedure
+      .input(z.object({
+        lat: z.number(),
+        lng: z.number(),
+        radiusKm: z.number().min(0.1).max(50).optional(),
+        limit: z.number().min(1).max(100).optional(),
+      }))
+      .query(async ({ input }) => {
+        return getNearbySpots(input.lat, input.lng, input.radiusKm, input.limit);
+      }),
+
+    create: publicProcedure
+      .input(z.object({
+        name: z.string().min(1).max(200),
+        description: z.string().optional(),
+        address: z.string().min(1).max(500),
+        lat: z.string(),
+        lng: z.string(),
+        categoryId: z.number(),
+        discountDetail: z.string().min(1),
+        discountRate: z.string().optional(),
+        phone: z.string().optional(),
+        website: z.string().optional(),
+        openingHours: z.string().optional(),
+        imageUrl: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        return createSpot({
+          ...input,
+          submittedBy: ctx.user?.id ?? null,
+        });
+      }),
+  }),
+
+  review: router({
+    bySpot: publicProcedure
+      .input(z.object({ spotId: z.number() }))
+      .query(async ({ input }) => {
+        return getReviewsBySpotId(input.spotId);
+      }),
+
+    create: publicProcedure
+      .input(z.object({
+        spotId: z.number(),
+        userName: z.string().min(1).max(100),
+        rating: z.number().min(1).max(5),
+        comment: z.string().optional(),
+        imageUrl: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        return createReview({
+          ...input,
+          userId: ctx.user?.id ?? null,
+        });
+      }),
+  }),
+
+  upload: router({
+    image: publicProcedure
+      .input(z.object({
+        base64: z.string(),
+        contentType: z.string(),
+        fileName: z.string(),
+      }))
+      .mutation(async ({ input }) => {
+        const buffer = Buffer.from(input.base64, "base64");
+        const ext = input.fileName.split(".").pop() || "jpg";
+        const key = `images/${nanoid()}.${ext}`;
+        const { url } = await storagePut(key, buffer, input.contentType);
+        return { url };
+      }),
+  }),
 });
 
 export type AppRouter = typeof appRouter;
