@@ -151,6 +151,7 @@ export const appRouter = router({
         lng: z.number(),
         radius: z.number().min(100).max(5000).optional(),
         keyword: z.string().optional(),
+        maxShops: z.number().min(1).max(20).optional(),
       }))
       .mutation(async ({ input }) => {
         const results = await searchGakuwariSpots(
@@ -158,6 +159,7 @@ export const appRouter = router({
           input.lng,
           input.radius ?? 500,
           input.keyword,
+          input.maxShops,
         );
         return { results };
       }),

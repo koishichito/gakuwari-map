@@ -16,6 +16,7 @@ import {
   AlertCircle,
   Sparkles,
   Filter,
+  Store,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -24,6 +25,7 @@ export default function AgentSearch() {
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [keyword, setKeyword] = useState("");
   const [radius, setRadius] = useState(500);
+  const [maxShops, setMaxShops] = useState(10);
   const [results, setResults] = useState<AgentResult[]>([]);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
@@ -107,7 +109,16 @@ export default function AgentSearch() {
       lng: userLocation.lng,
       radius,
       keyword: keyword.trim() || undefined,
+      maxShops,
     });
+  };
+
+  // Estimate time based on maxShops
+  const estimateTime = (shops: number): string => {
+    if (shops <= 5) return "約1〜2分";
+    if (shops <= 10) return "約2〜4分";
+    if (shops <= 15) return "約3〜5分";
+    return "約4〜6分";
   };
 
   // Map ready
@@ -297,21 +308,50 @@ export default function AgentSearch() {
 
             {/* Expandable filters */}
             {showFilters && (
-              <div className="bg-muted/50 rounded-lg p-4 mb-4 border-2 border-foreground/10">
-                <label className="text-sm font-semibold block mb-2">
-                  検索範囲: {radius}m
-                </label>
-                <Slider
-                  value={[radius]}
-                  onValueChange={([v]) => setRadius(v)}
-                  min={100}
-                  max={5000}
-                  step={100}
-                  className="w-full"
-                />
-                <div className="flex justify-between text-xs text-muted-foreground mt-1">
-                  <span>100m</span>
-                  <span>5,000m</span>
+              <div className="bg-muted/50 rounded-lg p-4 mb-4 border-2 border-foreground/10 space-y-5">
+                {/* 検索範囲 */}
+                <div>
+                  <label className="text-sm font-semibold block mb-2">
+                    検索範囲: {radius}m
+                  </label>
+                  <Slider
+                    value={[radius]}
+                    onValueChange={([v]) => setRadius(v)}
+                    min={100}
+                    max={5000}
+                    step={100}
+                    className="w-full"
+                  />
+                  <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                    <span>100m</span>
+                    <span>5,000m</span>
+                  </div>
+                </div>
+
+                {/* 検索店舗数 */}
+                <div>
+                  <label className="text-sm font-semibold flex items-center gap-1.5 mb-2">
+                    <Store size={14} />
+                    調査店舗数: {maxShops}件
+                  </label>
+                  <Slider
+                    value={[maxShops]}
+                    onValueChange={([v]) => setMaxShops(v)}
+                    min={1}
+                    max={20}
+                    step={1}
+                    className="w-full"
+                  />
+                  <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                    <span>1件</span>
+                    <span>20件</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1.5">
+                    推定所要時間: <span className="font-semibold text-foreground">{estimateTime(maxShops)}</span>
+                    {maxShops > 10 && (
+                      <span className="text-amber-500 ml-2">（件数が多いとタイムアウトする場合があります）</span>
+                    )}
+                  </p>
                 </div>
               </div>
             )}
@@ -325,7 +365,7 @@ export default function AgentSearch() {
               {agentSearch.isPending ? (
                 <>
                   <Loader2 size={18} className="mr-2 animate-spin" />
-                  AIが調査中...（最大5店舗、約1〜3分）
+                  AIが調査中...（最大{maxShops}店舗、{estimateTime(maxShops)}）
                 </>
               ) : (
                 <>
@@ -366,7 +406,9 @@ export default function AgentSearch() {
                 <br />
                 Web検索（SearXNG）で学割情報を調査しています。
                 <br />
-                 <span className="text-xs mt-1 block">最大5店舗を並列調査します。約1〜3分かかります。</span>
+                <span className="text-xs mt-1 block">
+                  最大{maxShops}店舗を調査します。{estimateTime(maxShops)}かかります。
+                </span>
               </p>
               <div className="flex justify-center gap-2">
                 {[0, 1, 2].map((i) => (

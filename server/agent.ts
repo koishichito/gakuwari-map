@@ -7,6 +7,8 @@
  * 3. Ollamaがtool_callsを返す → SearXNG(searxng.gitpullpull.me)でWeb検索実行
  * 4. 検索結果をOllamaに返して最終回答を取得
  * 5. 結果を整形して返却
+ *
+ * v3: モデル変更(9b)、バッチサイズ増加、セマフォ並行制御（ハッカソン対応）
  */
 
 import { makeRequest, type PlacesSearchResult, type PlaceDetailsResult } from "./_core/map";
@@ -91,10 +93,65 @@ interface SearXNGResponse {
 const OLLAMA_URL = process.env.OLLAMA_AGENT_URL || "https://ollama.gitpullpull.me";
 const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY || "";
 const SEARXNG_URL = "https://searxng.gitpullpull.me";
-const OLLAMA_MODEL = "qwen3.5:35b-a3b-q4_K_M"; //使用モデルをqwen3.5:27b より変更
+const OLLAMA_MODEL = "qwen3.5:9b-q4_K_M"; // v3: 9Bモデルに変更（高速・同時アクセス向き）
 const MAX_AGENT_LOOPS = 3; // tool_callsの最大ループ回数
 const OLLAMA_TIMEOUT = 120_000; // 2分タイムアウト
-const MAX_SHOPS = 5; // Agent調査する最大店舗数（504タイムアウト対策）
+const DEFAULT_MAX_SHOPS = 10; // デフォルトAgent調査店舗数（v3: 5→10に増加）
+const ABSOLUTE_MAX_SHOPS = 20; // フロントから指定可能な最大店舗数
+const BATCH_SIZE = 3; // 並列バッチサイズ（Ollamaへの同時リクエスト数）
+
+// ============================================================================
+// Semaphore - ハッカソン向け同時アクセス制御
+// ============================================================================
+
+/**
+ * セマフォ: Ollamaへの同時リクエスト数を制限する
+ * 複数ユーザーが同時にAgent検索を実行しても、Ollamaサーバーが
+ * 過負荷にならないようにグローバルで同時実行数を制御する。
+ */
+class Semaphore {
+  private current = 0;
+  private queue: Array<() => void> = [];
+
+  constructor(private readonly max: number) {}
+
+  async acquire(): Promise<void> {
+    if (this.current < this.max) {
+      this.current++;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(() => {
+        this.current++;
+        resolve();
+      });
+    });
+  }
+
+  release(): void {
+    this.current--;
+    const next = this.queue.shift();
+    if (next) next();
+  }
+
+  /** 現在のアクティブ数（デバッグ・モニタリング用） */
+  get activeCount(): number {
+    return this.current;
+  }
+
+  /** 待機中のリクエスト数 */
+  get waitingCount(): number {
+    return this.queue.length;
+  }
+}
+
+// グローバルセマフォ: Ollamaへの同時リクエストを最大3に制限
+// 9Bモデルは軽量なので3並列でも安定動作する
+const ollamaSemaphore = new Semaphore(3);
+
+// Agent検索全体の同時実行を最大2ユーザーに制限
+// （各ユーザーが最大20店舗×3ループ = 最大60リクエスト発生しうるため）
+const searchSemaphore = new Semaphore(2);
 
 // ============================================================================
 // System Prompt & Tools
@@ -183,7 +240,7 @@ async function searxngSearch(query: string): Promise<string> {
 // ============================================================================
 
 /**
- * 1店舗についてAgentループを実行する
+ * 1店舗についてAgentループを実行する（セマフォで同時実行数を制御）
  */
 async function runAgentForShop(shop: AgentShop): Promise<AgentResultItem> {
   const userMessage = `「${shop.name}」（住所: ${shop.address || "不明"}）の学割情報を調べてください。`;
@@ -197,26 +254,32 @@ async function runAgentForShop(shop: AgentShop): Promise<AgentResultItem> {
 
   while (loopCount < MAX_AGENT_LOOPS) {
     loopCount++;
-    console.log(`[Agent] Shop "${shop.name}" - Loop ${loopCount}`);
+    console.log(`[Agent] Shop "${shop.name}" - Loop ${loopCount} (active: ${ollamaSemaphore.activeCount}, waiting: ${ollamaSemaphore.waitingCount})`);
 
     try {
-      // Ollamaに問い合わせ
-      const response = await fetch(`${OLLAMA_URL}/api/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${OLLAMA_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: OLLAMA_MODEL,
-          messages,
-          tools: TOOLS_DEFINITION,
-          stream: false,
-          keep_alive: -1,
-          think: false,
-        }),
-        signal: AbortSignal.timeout(OLLAMA_TIMEOUT),
-      });
+      // セマフォでOllamaへの同時リクエスト数を制限
+      await ollamaSemaphore.acquire();
+      let response: Response;
+      try {
+        response = await fetch(`${OLLAMA_URL}/api/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${OLLAMA_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: OLLAMA_MODEL,
+            messages,
+            tools: TOOLS_DEFINITION,
+            stream: false,
+            keep_alive: -1,
+            think: false,
+          }),
+          signal: AbortSignal.timeout(OLLAMA_TIMEOUT),
+        });
+      } finally {
+        ollamaSemaphore.release();
+      }
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -416,57 +479,76 @@ export async function searchNearbyPlaces(
 
 /**
  * 周辺店舗を検索し、Agentで学割情報を調査する統合フロー
+ *
+ * @param maxShops - 調査する最大店舗数（フロントから指定可能、デフォルト10）
  */
 export async function searchGakuwariSpots(
   lat: number,
   lng: number,
   radius: number = 500,
   keyword?: string,
+  maxShops?: number,
 ): Promise<GakuwariSearchResult[]> {
-  // 1. Google Maps Places APIで周辺店舗を取得
-  console.log(`[Agent] Searching nearby places: lat=${lat}, lng=${lng}, radius=${radius}`);
-  const shops = await searchNearbyPlaces(lat, lng, radius, keyword);
+  const effectiveMaxShops = Math.min(
+    Math.max(maxShops ?? DEFAULT_MAX_SHOPS, 1),
+    ABSOLUTE_MAX_SHOPS,
+  );
 
-  if (shops.length === 0) {
-    console.log("[Agent] No shops found nearby");
-    return [];
+  // searchSemaphoreで同時検索ユーザー数を制限
+  console.log(`[Agent] Acquiring search semaphore (active: ${searchSemaphore.activeCount}, waiting: ${searchSemaphore.waitingCount})`);
+  await searchSemaphore.acquire();
+
+  try {
+    // 1. Google Maps Places APIで周辺店舗を取得
+    console.log(`[Agent] Searching nearby places: lat=${lat}, lng=${lng}, radius=${radius}, maxShops=${effectiveMaxShops}`);
+    const shops = await searchNearbyPlaces(lat, lng, radius, keyword);
+
+    if (shops.length === 0) {
+      console.log("[Agent] No shops found nearby");
+      return [];
+    }
+
+    console.log(`[Agent] Found ${shops.length} shops, investigating up to ${effectiveMaxShops}...`);
+
+    // 2. 各店舗についてAgentループを実行（バッチ分割で安定化）
+    const targetShops = shops.slice(0, effectiveMaxShops);
+    const allResults: AgentResultItem[] = [];
+
+    // BATCH_SIZE件ずつ並列実行（メモリ・レスポンス安定化）
+    for (let i = 0; i < targetShops.length; i += BATCH_SIZE) {
+      const batch = targetShops.slice(i, i + BATCH_SIZE);
+      console.log(`[Agent] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(targetShops.length / BATCH_SIZE)} (${batch.length} shops)`);
+
+      const batchResults = await Promise.all(
+        batch.map((shop) => runAgentForShop(shop)),
+      );
+      allResults.push(...batchResults);
+      console.log(`[Agent] Completed ${Math.min(i + BATCH_SIZE, targetShops.length)}/${targetShops.length} shops`);
+    }
+
+    // 3. Places結果とAgent結果をマージ
+    const agentMap = new Map(allResults.map((r) => [r.place_id, r]));
+
+    // Agent調査済みの店舗のみ返す
+    return targetShops.map((shop) => {
+      const agentResult = agentMap.get(shop.place_id);
+      return {
+        place_id: shop.place_id,
+        name: agentResult?.name || shop.name,
+        address: shop.address,
+        lat: shop.lat,
+        lng: shop.lng,
+        rating: shop.rating,
+        website: shop.website,
+        types: shop.types,
+        has_gakuwari: agentResult?.has_gakuwari ?? false,
+        discount_info: agentResult?.discount_info ?? "",
+        source_url: agentResult?.source_url ?? "",
+        confidence: agentResult?.confidence ?? "low",
+      };
+    });
+  } finally {
+    searchSemaphore.release();
+    console.log(`[Agent] Released search semaphore (active: ${searchSemaphore.activeCount}, waiting: ${searchSemaphore.waitingCount})`);
   }
-
-  console.log(`[Agent] Found ${shops.length} shops, starting agent investigation...`);
-
-  // 2. 各店舗についてAgentループを実行（並列、最大MAX_SHOPS件）
-  const targetShops = shops.slice(0, MAX_SHOPS);
-  const batchSize = MAX_SHOPS; // 全件並列実行で高速化
-  const allResults: AgentResultItem[] = [];
-
-  for (let i = 0; i < targetShops.length; i += batchSize) {
-    const batch = targetShops.slice(i, i + batchSize);
-    const batchResults = await Promise.all(
-      batch.map((shop) => runAgentForShop(shop)),
-    );
-    allResults.push(...batchResults);
-    console.log(`[Agent] Completed ${Math.min(i + batchSize, targetShops.length)}/${targetShops.length} shops`);
-  }
-
-  // 3. Places結果とAgent結果をマージ
-  const agentMap = new Map(allResults.map((r) => [r.place_id, r]));
-
-  // Agent調査済みの店舗のみ返す
-  return targetShops.map((shop) => {
-    const agentResult = agentMap.get(shop.place_id);
-    return {
-      place_id: shop.place_id,
-      name: agentResult?.name || shop.name,
-      address: shop.address,
-      lat: shop.lat,
-      lng: shop.lng,
-      rating: shop.rating,
-      website: shop.website,
-      types: shop.types,
-      has_gakuwari: agentResult?.has_gakuwari ?? false,
-      discount_info: agentResult?.discount_info ?? "",
-      source_url: agentResult?.source_url ?? "",
-      confidence: agentResult?.confidence ?? "low",
-    };
-  });
 }
